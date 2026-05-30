@@ -16,6 +16,11 @@ const pageBase = "https://courses.fit.cvut.cz"
 // 60-second timeout to accommodate larger file downloads.
 var pageHTTPClient = &http.Client{Timeout: 60 * time.Second}
 
+// setCookieAuth authenticates page/file requests via the OAuth access token cookie.
+func setCookieAuth(req *http.Request, token string) {
+	req.Header.Set("Cookie", "oauth_access_token="+token)
+}
+
 // PageClient fetches pages and files from courses.fit.cvut.cz.
 // Authentication uses the OAuth access token as a browser cookie.
 type PageClient struct {
@@ -45,19 +50,8 @@ func (c *PageClient) FetchPage(ctx context.Context, courseCode, path string) (st
 		return "", fmt.Errorf("invalid path: %q", path)
 	}
 
-	token, err := c.tokens.Token(ctx)
-	if err != nil {
-		return "", fmt.Errorf("acquire token: %w", err)
-	}
-
 	rawURL := c.baseURL() + "/" + courseCode + path
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
-	if err != nil {
-		return "", fmt.Errorf("build request for %s%s: %w", courseCode, path, err)
-	}
-	req.Header.Set("Cookie", "oauth_access_token="+token)
-
-	resp, err := pageHTTPClient.Do(req)
+	resp, err := doWithRefresh(ctx, pageHTTPClient, c.tokens, rawURL, setCookieAuth)
 	if err != nil {
 		return "", fmt.Errorf("fetch page %s%s: %w", courseCode, path, err)
 	}
@@ -123,18 +117,7 @@ func (c *PageClient) FetchRaw(ctx context.Context, rawURL string) ([]byte, strin
 		}
 	}
 
-	token, err := c.tokens.Token(ctx)
-	if err != nil {
-		return nil, "", fmt.Errorf("acquire token: %w", err)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fetchURL, nil)
-	if err != nil {
-		return nil, "", fmt.Errorf("build request for %s: %w", rawURL, err)
-	}
-	req.Header.Set("Cookie", "oauth_access_token="+token)
-
-	resp, err := pageHTTPClient.Do(req)
+	resp, err := doWithRefresh(ctx, pageHTTPClient, c.tokens, fetchURL, setCookieAuth)
 	if err != nil {
 		return nil, "", fmt.Errorf("fetch file %s: %w", rawURL, err)
 	}

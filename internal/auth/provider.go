@@ -35,7 +35,7 @@ func NewProvider(store *TokenStore) *Provider {
 	return &Provider{store: store, portalURL: DefaultPortalURL}
 }
 
-// Token returns a valid access token, refreshing if needed.
+// Token returns a valid access token, refreshing if the local copy has expired.
 func (p *Provider) Token(ctx context.Context) (string, error) {
 	token, err := p.store.Load()
 	if err != nil {
@@ -45,20 +45,35 @@ func (p *Provider) Token(ctx context.Context) (string, error) {
 		return "", err
 	}
 
-	if !token.Valid() {
-		if token.RefreshToken == "" {
-			return "", fmt.Errorf("access token expired and no refresh token available: run --setup to authenticate")
-		}
+	if token.Valid() {
+		return token.AccessToken, nil
+	}
+	return p.Refresh(ctx)
+}
 
-		token, err = refresh(ctx, token.RefreshToken, p.portalURL)
-		if err != nil {
-			return "", err
+// Refresh forces a new access token using the stored refresh token, regardless
+// of whether the local copy looks valid. Callers use this to recover when the
+// server rejects a locally-unexpired token with 401.
+func (p *Provider) Refresh(ctx context.Context) (string, error) {
+	token, err := p.store.Load()
+	if err != nil {
+		if errors.Is(err, ErrNoToken) {
+			return "", fmt.Errorf("no token stored: run --setup to authenticate")
 		}
-
-		// Non-fatal: we still have a valid token in memory.
-		_ = p.store.Save(token)
+		return "", err
 	}
 
+	if token.RefreshToken == "" {
+		return "", fmt.Errorf("no refresh token available: run --setup to authenticate")
+	}
+
+	token, err = refresh(ctx, token.RefreshToken, p.portalURL)
+	if err != nil {
+		return "", err
+	}
+
+	// Non-fatal: we still have a valid token in memory.
+	_ = p.store.Save(token)
 	return token.AccessToken, nil
 }
 

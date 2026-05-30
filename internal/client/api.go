@@ -15,8 +15,47 @@ const apiBase = "https://courses.fit.cvut.cz/api/v2"
 var httpClient = &http.Client{Timeout: 30 * time.Second}
 
 // TokenProvider supplies a valid OAuth access token, refreshing it if needed.
+// Refresh forces a new access token regardless of local expiry; it is used to
+// recover when the server rejects a locally-unexpired token (e.g. revoked
+// out-of-band) with 401.
 type TokenProvider interface {
 	Token(ctx context.Context) (string, error)
+	Refresh(ctx context.Context) (string, error)
+}
+
+// doWithRefresh sends an authenticated GET request and, if the server responds
+// with 401, force-refreshes the access token and retries once. setAuth applies
+// the token to the request (Bearer header for the API, cookie for pages), so the
+// retry mechanism is shared across both clients.
+func doWithRefresh(ctx context.Context, hc *http.Client, tokens TokenProvider, url string, setAuth func(*http.Request, string)) (*http.Response, error) {
+	send := func(token string) (*http.Response, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			return nil, fmt.Errorf("build request %s: %w", url, err)
+		}
+		setAuth(req, token)
+		return hc.Do(req)
+	}
+
+	token, err := tokens.Token(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("acquire token: %w", err)
+	}
+	resp, err := send(token)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusUnauthorized {
+		return resp, nil
+	}
+
+	// Token rejected despite being locally valid: force a refresh and retry once.
+	_ = resp.Body.Close()
+	token, err = tokens.Refresh(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("refresh after 401: %w", err)
+	}
+	return send(token)
 }
 
 // UserInfo holds the authenticated user's profile as returned by the API.
@@ -70,19 +109,12 @@ func (c *APIClient) apiBase() string {
 }
 
 func (c *APIClient) get(ctx context.Context, path string, dst any) error {
-	token, err := c.tokens.Token(ctx)
-	if err != nil {
-		return fmt.Errorf("acquire token: %w", err)
-	}
-
 	url := c.apiBase() + path
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return fmt.Errorf("build request %s: %w", path, err)
+	setAuth := func(req *http.Request, token string) {
+		req.Header.Set("Authorization", "Bearer "+token)
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
 
-	resp, err := httpClient.Do(req)
+	resp, err := doWithRefresh(ctx, httpClient, c.tokens, url, setAuth)
 	if err != nil {
 		return fmt.Errorf("courses api GET %s: %w", path, err)
 	}
