@@ -11,7 +11,8 @@ import (
 
 type staticToken string
 
-func (s staticToken) Token(_ context.Context) (string, error) { return string(s), nil }
+func (s staticToken) Token(_ context.Context) (string, error)   { return string(s), nil }
+func (s staticToken) Refresh(_ context.Context) (string, error) { return string(s), nil }
 
 func assertBearer(t *testing.T, r *http.Request) {
 	t.Helper()
@@ -91,6 +92,46 @@ func TestCourseInfo_NotFound(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "XX-FAKE not found") {
 		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+// refreshableToken is a TokenProvider whose access token can be force-refreshed,
+// simulating the real Provider recovering from a server-side token revocation.
+type refreshableToken struct {
+	current      string
+	refreshed    string
+	refreshCalls int
+}
+
+func (r *refreshableToken) Token(_ context.Context) (string, error) { return r.current, nil }
+
+func (r *refreshableToken) Refresh(_ context.Context) (string, error) {
+	r.refreshCalls++
+	r.current = r.refreshed
+	return r.refreshed, nil
+}
+
+func TestRetryOn401WithRefresh(t *testing.T) {
+	want := UserInfo{Username: "novakj", PersonalNumber: 123456}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer fresh-token" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		writeJSON(w, want)
+	}))
+	defer srv.Close()
+
+	tok := &refreshableToken{current: "stale-token", refreshed: "fresh-token"}
+	got, err := NewAPIClientForTest(tok, srv.URL).UserInfo(context.Background())
+	if err != nil {
+		t.Fatalf("UserInfo after 401 retry: %v", err)
+	}
+	if got != want {
+		t.Errorf("got %+v, want %+v", got, want)
+	}
+	if tok.refreshCalls != 1 {
+		t.Errorf("refresh calls = %d, want 1", tok.refreshCalls)
 	}
 }
 

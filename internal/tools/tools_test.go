@@ -79,7 +79,8 @@ func resultText(t *testing.T, res *mcp.CallToolResult) string {
 
 type staticToken string
 
-func (s staticToken) Token(_ context.Context) (string, error) { return string(s), nil }
+func (s staticToken) Token(_ context.Context) (string, error)   { return string(s), nil }
+func (s staticToken) Refresh(_ context.Context) (string, error) { return string(s), nil }
 
 // ---------------------------------------------------------------------------
 // Tests for get_my_info

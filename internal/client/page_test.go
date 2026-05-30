@@ -25,6 +25,31 @@ func TestFetchPage_ReturnsMarkdown(t *testing.T) {
 	}
 }
 
+func TestFetchPage_RetryOn401WithRefresh(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if c, err := r.Cookie("oauth_access_token"); err != nil || c.Value != "fresh-token" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(`<html><body><h1>Hello Course</h1></body></html>`))
+	}))
+	defer srv.Close()
+
+	tok := &refreshableToken{current: "stale-token", refreshed: "fresh-token"}
+	c := NewPageClientForTest(tok, srv.URL)
+	md, err := c.FetchPage(context.Background(), "NI-VCC", "/")
+	if err != nil {
+		t.Fatalf("FetchPage after 401 retry: %v", err)
+	}
+	if !strings.Contains(md, "Hello Course") {
+		t.Errorf("expected 'Hello Course', got: %s", md)
+	}
+	if tok.refreshCalls != 1 {
+		t.Errorf("refresh calls = %d, want 1", tok.refreshCalls)
+	}
+}
+
 func TestFetchPage_Non2xxReturnsError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
