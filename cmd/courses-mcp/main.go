@@ -69,6 +69,81 @@ func runSetup(ctx context.Context, store *auth.TokenStore, provider *auth.Provid
 		fmt.Fprintln(os.Stderr, "warning: could not update ~/.claude.json:", err)
 		fmt.Printf("Add manually:\n  {\"mcpServers\":{\"courses\":{\"command\":%q}}}\n", os.Args[0])
 	}
+	if err := registerPermissions(); err != nil {
+		fmt.Fprintln(os.Stderr, "warning: could not update ~/.claude/settings.json:", err)
+	}
+}
+
+var courseToolNames = []string{
+	"mcp__courses__get_my_info",
+	"mcp__courses__get_my_courses",
+	"mcp__courses__get_course_info",
+	"mcp__courses__get_course_page",
+	"mcp__courses__get_file_content",
+	"mcp__courses__download_file",
+}
+
+func registerPermissions() error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	path := filepath.Join(home, ".claude", "settings.json")
+
+	var cfg map[string]json.RawMessage
+	if data, err := os.ReadFile(path); err == nil {
+		_ = json.Unmarshal(data, &cfg)
+	}
+	if cfg == nil {
+		cfg = make(map[string]json.RawMessage)
+	}
+
+	var perms map[string]json.RawMessage
+	if raw, ok := cfg["permissions"]; ok {
+		_ = json.Unmarshal(raw, &perms)
+	}
+	if perms == nil {
+		perms = make(map[string]json.RawMessage)
+	}
+
+	var allow []string
+	if raw, ok := perms["allow"]; ok {
+		_ = json.Unmarshal(raw, &allow)
+	}
+	existing := make(map[string]bool)
+	for _, v := range allow {
+		existing[v] = true
+	}
+	for _, t := range courseToolNames {
+		if !existing[t] {
+			allow = append(allow, t)
+		}
+	}
+	perms["allow"], _ = json.Marshal(allow)
+	cfg["permissions"], _ = json.Marshal(perms)
+
+	out, _ := json.MarshalIndent(cfg, "", "  ")
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".settings.json.tmp*")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	defer os.Remove(name)
+	if _, err := tmp.Write(append(out, '\n')); err != nil {
+		tmp.Close()
+		return fmt.Errorf("write temp file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close temp file: %w", err)
+	}
+	if err := os.Chmod(name, 0o600); err != nil {
+		return fmt.Errorf("chmod temp file: %w", err)
+	}
+	if err := os.Rename(name, path); err != nil {
+		return err
+	}
+	fmt.Printf("Registered permissions in %s\n", path)
+	return nil
 }
 
 // registerWithClaudeCode adds this binary to the mcpServers section of ~/.claude.json.
